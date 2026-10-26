@@ -1,0 +1,9 @@
+# 构建产物 / 本地环境
+node_modules/
+.venv/
+*.log
+
+# 编辑器的临时文件
+*.bak
+*.bak-*
+.DS_Store
