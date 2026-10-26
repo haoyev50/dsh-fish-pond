@@ -1,6 +1,6 @@
 # dsh-fish-pond · 大肥鱼塘
 
-大肥鱼塘里养鱼！这是一个给DSH（DeepSeek Harness）或桌面做的，给哦鲸鲸的鱼塘，插件可以基于dsh-bili-scroll爬取的数据来跟你对话。字号随时可调，你可以自己选择让她悬浮于桌面还是DSH上。你可以直接给deepseek扔过去这个github的地址，让她自己装。
+大肥鱼塘里养鱼！这是一个给DSH（DeepSeek Harness）或桌面做的，给哦鲸鲸的鱼塘，插件可以基于dsh-bili-scroll爬取的数据来跟你对话。字号随时可调，你可以自己选择让她悬浮于桌面还是DSH上。你可以直接给deepseek扔过去这个github的地址，让她自己装。插件依赖于于github.com/c1overzz/dsh-bili-scroll 凌羽大佬的插件。
 
 ![fish](assets/art/idle.webp)
 
