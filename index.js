@@ -33,7 +33,7 @@ const LOG_FILE = join(ART_HOME, 'art.log')
 
 const SLOT_MS = 20_000          // 一条评论占住画面 20 秒
 const DEBOUNCE_MS = 400
-const BUILD = '2026-10-26b'    // 每次改宿主就换一下，方便看日志确认版本
+const BUILD = '2026-10-26c'    // 每次改宿主就换一下，方便看日志确认版本
 
 const BV_RE = /BV[0-9A-Za-z]{10}/
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -194,6 +194,13 @@ function systemPython() {
   return process.env.POND_PYTHON || 'python'
 }
 
+function biliPython(name = 'python.exe') {
+  const win = join(BILI_HOME, '.venv', 'Scripts', name)
+  if (existsSync(win)) return win
+  const posix = join(BILI_HOME, '.venv', 'bin', name.replace('.exe', ''))
+  return existsSync(posix) ? posix : ''
+}
+
 /** 运行桌面宠物用的解释器：优先自己的 venv，其次 bili-scroll 的，最后系统 */
 function resolvePython() {
   return venvPython('python.exe') || systemPython()
@@ -201,14 +208,69 @@ function resolvePython() {
 
 /** 同上，但不弹控制台窗口 */
 function resolvePythonW() {
-  return venvPython('pythonw.exe') || venvPython('python.exe') || systemPython()
+  return venvPython('pythonw.exe') || venvPython('python.exe') || biliPython('pythonw.exe') || biliPython('python.exe') || systemPython()
 }
 
-const floatReady = () => existsSync(PY_MARK)
+/** 候选解释器：插件自己的 venv → dsh-bili-scroll 的 venv → 环境变量指定的 */
+function pythonCandidates() {
+  return [
+    venvPython('python.exe'),
+    biliPython('python.exe'),
+    process.env.POND_PYTHON || '',
+  ].filter(Boolean)
+}
+
+/** 真的跑一次 import，确认 Pillow + tkinter 都在（只看文件存在不够） */
+function probePython(py) {
+  return new Promise((resolve) => {
+    let child
+    try {
+      child = spawn(py, ['-c', 'import PIL, tkinter; print("pond-ok")'], {
+        windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } catch { return resolve(false) }
+    let out = ''
+    child.stdout?.on('data', (c) => { out += String(c) })
+    child.on('error', () => resolve(false))
+    child.on('exit', (code) => resolve(code === 0 && out.includes('pond-ok')))
+  })
+}
+
+/** 当前桌面环境的探测结果（启动时、装完后都会刷新） */
+let floatProbe = { ready: null, py: '', reason: '还没探测' }
+
+async function ensureFloatEnv() {
+  if (floatProbe.ready === true && floatProbe.py && existsSync(floatProbe.py)) return floatProbe
+  const tried = []
+  for (const py of pythonCandidates()) {
+    tried.push(py)
+    // eslint-disable-next-line no-await-in-loop
+    if (await probePython(py)) {
+      floatProbe = { ready: true, py, reason: '' }
+      log(`桌面环境就绪：${py}`)
+      return floatProbe
+    }
+  }
+  floatProbe = {
+    ready: false,
+    py: '',
+    reason: tried.length
+      ? `试过这些 python，都没有 Pillow / tkinter：${tried.join(' | ')}`
+      : '系统里找不到可用的 python',
+  }
+  return floatProbe
+}
+
+/**
+ * 能不能开桌面窗：以**探测结果**为准，不看文件存不存在。
+ * 之前只认 PY_MARK（自己建 venv 成功），结果 DSH 的沙箱不让 python 在
+ * ~/.dsh/deep-fish-pond 下建目录（WinError 5），于是永远「未就绪」。
+ */
+const floatReady = () => floatProbe.ready === true
 
 /** 后台建 venv + 装 Pillow；进度写 setup.log */
 function setupPython() {
-  if (floatReady()) return { ok: true, ready: true }
+  if (existsSync(PY_MARK)) return { ok: true, ready: true, mode: 'venv' }
   mkdirSync(PY_HOME, { recursive: true })
   const base = systemPython()
   try { writeFileSync(SETUP_LOG, '', 'utf8') } catch { /* 无所谓 */ }
@@ -227,13 +289,20 @@ function setupPython() {
   }
 
   run(base, ['-m', 'venv', PY_VENV], (ok) => {
-    if (!ok) { log2('建 venv 失败'); return }
+    if (!ok) {
+      // 常见原因：DSH 沙箱不让 python 在插件家目录建目录（WinError 5）
+      log2('建 venv 失败 —— 退到现成的 python 上探测 Pillow')
+      ensureFloatEnv().then((p) => log2(p.ready ? `可用：${p.py}` : `还是不行：${p.reason}`))
+      return
+    }
     const py = venvPython('python.exe')
     if (!py) { log2('venv 里没有 python'); return }
-    run(py, ['-m', 'pip', 'install', '--upgrade', 'pip'], () => {
-      run(py, ['-m', 'pip', 'install', 'pillow'], (ok2) => {
-        if (ok2) { try { writeFileSync(PY_MARK, new Date().toISOString(), 'utf8') } catch { /* 无所谓 */ } }
-        log2(ok2 ? 'Pillow 装好了' : 'Pillow 没装上')
+    run(py, ['-m', 'pip', 'install', '--upgrade', 'pip', '--disable-pip-version-check'], () => {
+      // 国内直连 PyPI 很慢，默认走清华源
+      run(py, ['-m', 'pip', 'install', 'pillow', '--disable-pip-version-check', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'], (ok2) => {
+        if (ok2) { try { writeFileSync(PY_MARK, `venv:${py}`, 'utf8') } catch { /* 无所谓 */ } }
+        log2(ok2 ? 'Pillow 装好了' : 'Pillow 没装上 —— 改用现成的 python 探测')
+        ensureFloatEnv().then((p) => log2(p.ready ? `可用：${p.py}` : `还是不行：${p.reason}`))
       })
     })
   })
@@ -420,6 +489,8 @@ export function apply(ctx) {
   // 启动时先对一遍：插件重启期间漏掉的行也接上（老行已在 state 里，不会重画）
   setTimeout(() => scan('启动扫描'), 1200).unref?.()
   setTimeout(() => scanDigest('启动扫描'), 2500).unref?.()
+  // 启动时探一次桌面环境（只跑一次 python -c，很轻）
+  setTimeout(() => { ensureFloatEnv().catch(() => {}) }, 3000).unref?.()
 
   tool({
     name: 'bili_art_status',
@@ -511,7 +582,8 @@ export function apply(ctx) {
   function startFloat(base) {
     if (floatRunning()) return { ok: true, running: true, pid: floatProc.pid }
     try {
-      const py = resolvePythonW()
+      // 用探测通过的那个解释器；没探测过就用默认顺序
+      const py = (floatProbe.ready && floatProbe.py) ? floatProbe.py : resolvePythonW()
       const script = join(PLUGIN_DIR, 'render', 'pond_window.py')
       const child = spawn(py, [
         script,
@@ -595,13 +667,15 @@ export function apply(ctx) {
       if (route === '/api/deep-fish-pond/float') {
         const action = String(url.searchParams.get('action') || (req.method === 'POST' ? 'start' : 'status'))
         if (action === 'stop') return sendJson(res, 200, stopFloat())
-        if (action === 'status' || req.method === 'GET') return sendJson(res, 200, { ok: true, running: floatRunning(), ready: floatReady() })
-        if (!floatReady()) {
+        if (action === 'status' || req.method === 'GET') {
+          return sendJson(res, 200, { ok: true, running: floatRunning(), ready: floatReady(), py: floatProbe.py, reason: floatProbe.reason })
+        }
+        // 真去探一次（算上 pip 装完的情况），别只信缓存
+        const env = await ensureFloatEnv()
+        if (!env.ready) {
           return sendJson(res, 200, {
-            ok: false,
-            running: false,
-            ready: false,
-            error: '桌面悬浮窗的 Python 环境还没装好。右键菜单里点一次「设置」→「装桌面环境」，或在对话里让我跑 pond_setup。',
+            ok: false, running: false, ready: false, reason: env.reason,
+            error: `桌面悬浮窗需要 Python + Pillow：${env.reason}`,
           })
         }
         const host = String(req.headers?.host || '127.0.0.1:19387')
@@ -613,7 +687,8 @@ export function apply(ctx) {
         if (req.method === 'GET') {
           let tail = ''
           try { tail = readFileSync(SETUP_LOG, 'utf8').slice(-1200) } catch { /* 没日志 */ }
-          return sendJson(res, 200, { ok: true, ready: floatReady(), venv: PY_VENV, log: tail })
+          const env = await ensureFloatEnv()
+          return sendJson(res, 200, { ok: true, ready: env.ready, py: env.py, reason: env.reason, venv: PY_VENV, log: tail })
         }
         return sendJson(res, 200, { ...setupPython(), ready: floatReady(), venv: PY_VENV })
       }
