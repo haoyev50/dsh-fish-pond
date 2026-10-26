@@ -33,7 +33,7 @@ const LOG_FILE = join(ART_HOME, 'art.log')
 
 const SLOT_MS = 20_000          // 一条评论占住画面 20 秒
 const DEBOUNCE_MS = 400
-const BUILD = '2026-10-26c'    // 每次改宿主就换一下，方便看日志确认版本
+const BUILD = '2026-10-26d'    // 每次改宿主就换一下，方便看日志确认版本
 
 const BV_RE = /BV[0-9A-Za-z]{10}/
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -583,7 +583,13 @@ export function apply(ctx) {
     if (floatRunning()) return { ok: true, running: true, pid: floatProc.pid }
     try {
       // 用探测通过的那个解释器；没探测过就用默认顺序
-      const py = (floatProbe.ready && floatProbe.py) ? floatProbe.py : resolvePythonW()
+      const probed = (floatProbe.ready && floatProbe.py) ? floatProbe.py : resolvePythonW()
+      // ⚠️ 一定优先 pythonw.exe：它是 GUI 子系统，天生没有控制台窗口。
+      //    用 python.exe + detached:true 时 Windows 会给子进程单独开一个控制台，
+      //    windowsHide 也压不住（2026-10-26 弹出来的那个黑窗口就是这么来的）。
+      const pyw = probed.replace(/python\.exe$/i, 'pythonw.exe')
+      const useGui = existsSync(pyw)
+      const py = useGui ? pyw : probed
       const script = join(PLUGIN_DIR, 'render', 'pond_window.py')
       const child = spawn(py, [
         script,
@@ -591,7 +597,8 @@ export function apply(ctx) {
         '--assets', join(PLUGIN_DIR, 'assets', 'art'),
         '--size', '220',
       ], {
-        detached: true,
+        // 有 pythonw 才敢 detached（它本身就没有控制台）；否则留在同一控制台且隐藏
+        detached: useGui,
         stdio: 'ignore',
         windowsHide: true,
         env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
@@ -599,7 +606,7 @@ export function apply(ctx) {
       child.on('exit', () => { if (floatProc === child) floatProc = null })
       child.unref()
       floatProc = child
-      log(`桌面鱼塘起来了：pid=${child.pid}`)
+      log(`桌面鱼塘起来了：pid=${child.pid}（${useGui ? 'pythonw，无控制台' : 'python.exe，隐藏控制台'}）`)
       return { ok: true, running: true, pid: child.pid }
     } catch (e) {
       log(`桌面鱼塘起不来：${e?.message ?? e}`)
